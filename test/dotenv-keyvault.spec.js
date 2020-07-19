@@ -3,6 +3,9 @@ const dotenvKeyvault = rewire('../index');
 const sinon = require('sinon');
 const { expect } = require('chai');
 var ServerMock = require('mock-http-server');
+const { fail } = require('assert');
+const { StatusCodeError } = require('request-promise-core/errors');
+const { UnableToPopulateKVBackedEnvVarError } = require('../index')
 
 function createFakeDotenv(parsed) {
     return {
@@ -22,13 +25,24 @@ describe('dotenv-keyvault', () => {
         afterEach(() => {
             revert();
         });
-        it('takes an Azure Active Directory token as a function', (done) => {
+        it('takes an Azure Active Directory token as a function when kv prefix present', (done) => {
             const fakeADToken = 'SOME_TOKEN';
             const configSpy = sinon.stub().returns(fakeADToken);
             const keyVaultGetter = dotenvKeyvault.config({ aadAccessToken: configSpy });
-            keyVaultGetter({})
+            keyVaultGetter(createFakeDotenv({ MYPLAIN: 'PLAINTEXT', MYSECRET: 'kv:myfakekeyvault.com' }))
                 .then(() => {
                     expect(configSpy.called).to.equal(true);
+                    done();
+                })
+                .catch(done);
+        });
+        it('does not take an Azure Active Directory token as a function when kv prefix not present', (done) => {
+            const fakeADToken = 'SOME_TOKEN';
+            const configSpy = sinon.stub().returns(fakeADToken);
+            const keyVaultGetter = dotenvKeyvault.config({ aadAccessToken: configSpy });
+            keyVaultGetter()
+                .then(() => {
+                    expect(configSpy.called).to.equal(false);
                     done();
                 })
                 .catch(done);
@@ -132,6 +146,75 @@ describe('dotenv-keyvault', () => {
                     done();
                 })
                 .catch(done);
+        });
+
+        it('MSI failure', (done) => {
+            msiServer.on({
+                method: 'GET',
+                path: '*',
+                reply: {
+                    status: 500,
+                },
+            });
+
+            const dotEnvConfig = createFakeDotenv({
+                MYTRUTH: 'TRUTH',
+                MYSECRET: 'kv:http://localhost:9001/secrets/MYSECRET',
+            });
+            const keyVaultEnvGetter = dotenvKeyvault.config();
+
+            keyVaultEnvGetter(dotEnvConfig)
+                .then((keyVaultConfigWithSecrets) => {
+                    fail();
+                    done();
+                })
+                .catch((reason) => {
+                    expect(reason).not.be.null;
+                    expect(reason.name).to.be.equals('StatusCodeError')
+                    expect(reason).to.be.instanceOf(StatusCodeError); // testing type is hard
+                    done();
+                });
+        });
+
+        it('Keyvault failure', (done) => {
+            msiServer.on({
+                method: 'GET',
+                path: '*',
+                reply: {
+                    status: 200,
+                    headers: { 'content-type': 'application/json' },
+                    body: JSON.stringify({
+                        access_token: 'eyJ0eXAiblahblah',
+                        expires_on: '09/14/2018 00:00:00 PM +00:00',
+                        resource: 'https://vault.azure.net',
+                        token_type: 'Bearer',
+                    }),
+                },
+            });
+
+            kvServer.on({
+                method: 'GET',
+                path: '*',
+                reply: {
+                    status: 500
+                },
+            });
+
+            const dotEnvConfig = createFakeDotenv({
+                MYTRUTH: 'TRUTH',
+                MYSECRET: 'kv:http://localhost:9001/secrets/MYSECRET',
+            });
+            const keyVaultEnvGetter = dotenvKeyvault.config();
+
+            keyVaultEnvGetter(dotEnvConfig)
+                .then((keyVaultConfigWithSecrets) => {
+                    fail();
+                    done();
+                })
+                .catch(reason => {
+                    expect(reason).not.be.instanceOf(UnableToPopulateKVBackedEnvVarError);
+                    done();
+                });
         });
     });
 });

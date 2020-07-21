@@ -69,7 +69,9 @@ module.exports = {
                 const fetches = Object.keys(dotenvParsed)
                     .filter((key) => dotenvParsed[key].match(/^kv:/))
                     .map((key) => {
-                        const uri = dotenvParsed[key].replace(/^kv:/, '') + '?api-version=2016-10-01';
+                        // environment variable will have higher precedence than .env file value
+                        const value = process.env[key] ? process.env[key] : dotenvParsed[key]
+                        const uri = value.replace(/^kv:/, '') + '?api-version=2016-10-01';
                         return new Promise((resolve, reject) => {
                             return request({
                                 method: 'GET',
